@@ -31,6 +31,34 @@ For Linux TCP BBR:
 
 Check out [TCP BBR Quick-Start: Building and Running TCP BBR on Google Compute Engine](https://github.com/google/bbr/blob/master/Documentation/bbr-quick-start.md).
 
+## How can I test Linux TCP BBR with an emulated network?
+
+For a feature-rich tool to test Linux TCP performance over emulated networks,
+check out the [transperf](https://github.com/google/transperf) tool, which
+handles the details of configuring network emulation on a single machine or
+sets of physical machines.
+
+If you want to manually configure an emulated network scenario on Linux
+machines, you can use netem directly. However, keep in mind that TCP
+performance results are not realistic when netem is installed on the sending
+machine, due to interactions between netem and mechanisms like TSQ (TCP small
+queues). To get realistic TCP performance results with netem, the netem qdisc
+has to be installed either on an intermediate "router" machine or on the
+ingress path of the receiving machine.
+
+For examples on how to install netem on the ingress of a machine, see the ifb0
+example in the "How can I use netem on incoming traffic?" section of the
+[linuxfoundation.org netem page](https://wiki.linuxfoundation.org/networking/netem).
+
+Another factor to consider is that when you emulate loss with netem, the netem
+qdisc makes drop decisions in terms of entire ```sk_buff``` TSO bursts (of up
+to 44 lMTU-sized packets), rather than individual MTU-sized packets. This makes
+the loss process highly unrealistic relative to a drop process that drops X% of
+MTU-size packets: the time in between drops can be up to 44x longer, and the
+drops are much burstier (e.g. dropping 44 MTU-sized packets in a single
+```sk_buff```). For more realistic loss processes you may need to disable LRO
+and GRO.
+
 ## How can I visualize the behavior of Linux TCP BBR connections?
 
 Check out [tcpdump](http://www.tcpdump.org/),
@@ -96,14 +124,40 @@ And get output like the following:
   minrtt:14.451
 ```
 
+## How can I programmatically get Linux TCP BBR congestion control state for a socket?
+
+You can get key Linux TCP BBR state variables, including bandwidth estimate, min_rtt estimate, etc., using the TCP_CC_INFO socket option. For example:
+
+```
+#include <linux/inet_diag.h>
+...
+typedef unsigned long long u64;
+...
+  int fd;
+  u64 bw;
+ 
+  union tcp_cc_info info;
+  socklen_t len = sizeof(info);
+
+  if (getsockopt(fd, SOL_TCP, TCP_CC_INFO, &info, &len) < 0) {
+    perror("getsockopt(TCP_CC_INFO)");
+    exit(EXIT_FAILURE);
+  }
+
+  if (len >= sizeof(info.bbr)) {
+    bw = ((u64)info.bbr.bbr_bw_hi << 32) | (u64)info.bbr.bbr_bw_lo;
+    printf("bw: %lu bytes/sec\n", bw);
+    printf("min_rtt: %u usec\n", info.bbr.bbr_min_rtt);
+  }
+```
 
 ## Where can I find the source code for QUIC BBR?
 
 For QUIC BBR:
 
 - The latest code:
-  - https://cs.chromium.org/chromium/src/net/third_party/quiche/src/quic/core/congestion_control/bbr_sender.cc
-  - https://cs.chromium.org/chromium/src/net/third_party/quiche/src/quic/core/congestion_control/bbr_sender.h
+  - https://github.com/google/quiche/blob/main/quiche/quic/core/congestion_control/bbr_sender.cc
+  - https://github.com/google/quiche/blob/main/quiche/quic/core/congestion_control/bbr_sender.h
 
 ## How can I visualize the behavior of QUIC connections?
 
@@ -118,3 +172,24 @@ computed as a multiple of the maximum recent delivery rate seen.
 Here is a detailed derivation, along with some graphs to illustrate:
 
 - https://github.com/google/bbr/blob/master/Documentation/startup/gain/analysis/bbr_startup_gain.pdf
+
+## Where does the value of the BBR DRAIN pacing_gain come from?
+
+In a nutshell, the BBR DRAIN pacing gain is derived to be the pacing gain that
+is selected to try to drain the queue created by STARTUP in one packet-timed
+round trip.
+
+Here is a detailed derivation:
+
+- https://github.com/google/bbr/blob/master/Documentation/startup/gain/analysis/bbr_drain_gain.pdf
+
+## How does BBR converge to an approximately fair share of bandwidth?
+
+In short, when there are multiple BBR flows sharing a bottleneck
+where there is no loss or ECN, BBR flows with a low share of throughput
+grow their bandwidth measurements more quickly than flows with a high
+share of throughput.
+
+Here is a detailed discussion:
+
+- https://github.com/google/bbr/blob/master/Documentation/bbr_bandwidth_based_convergence.pdf
